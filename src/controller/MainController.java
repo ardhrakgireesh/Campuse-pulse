@@ -24,6 +24,8 @@ public class MainController {
     private ResourceService resourceService = new ResourceService();
     private service.RequestService requestService;
     private service.HandoverService handoverService;
+    private model.RentalRepository rentalRepository;
+    private service.RentalService rentalService;
 
     private List<Request> requests = new ArrayList<>();
     private List<Volunteer> volunteers = new ArrayList<>();
@@ -37,6 +39,8 @@ public class MainController {
         this.authController = new AuthController(userRepository);
         this.requestService = new service.RequestService(resourceService);
         this.handoverService = new service.HandoverService(requestService, resourceService);
+        this.rentalRepository = new model.RentalRepository();
+        this.rentalService = new service.RentalService(rentalRepository, resourceService);
         initializeSampleData();
     }
 
@@ -92,6 +96,17 @@ public class MainController {
             createRequest(AppConstants.REQUEST_TYPE_EMERGENCY, "U001",
                 "First aid needed for minor sprain on sports ground", "First Aid");
         }
+
+        // Reconcile catalog quantities with active persistent rentals across restarts
+        if (rentalRepository != null) {
+            List<model.Rental> activeRentals = rentalRepository.getActiveRentals();
+            for (model.Rental rental : activeRentals) {
+                Resource r = resourceService.findById(rental.getResourceId());
+                if (r != null && r.getQuantity() > 0) {
+                    r.borrowResource(rental.getStudentId());
+                }
+            }
+        }
     }
 
     public ResourceService getResourceService() {
@@ -104,6 +119,14 @@ public class MainController {
 
     public service.HandoverService getHandoverService() {
         return handoverService;
+    }
+
+    public service.RentalService getRentalService() {
+        return rentalService;
+    }
+
+    public model.RentalRepository getRentalRepository() {
+        return rentalRepository;
     }
 
     public Volunteer getVolunteerByUserId(String userId) {
@@ -542,6 +565,35 @@ public class MainController {
             return;
         }
         userRepository.activateUser(userId);
+    }
+
+    public boolean isUserActive(String userId) {
+        if (userId == null || userId.trim().isEmpty()) {
+            return false;
+        }
+        return userRepository.isUserActive(userId);
+    }
+
+    public model.Rental rentResource(String resourceId, int durationDays) {
+        if (currentUser == null) {
+            throw new IllegalStateException("You must be logged in to rent resources.");
+        }
+        return rentalService.rentResource(currentUser.getUserId(), resourceId, durationDays);
+    }
+
+    public model.Rental processRentalReturn(String rentalId) {
+        return rentalService.processReturn(rentalId);
+    }
+
+    public List<model.Rental> getRentalsForCurrentStudent() {
+        if (currentUser == null) {
+            return java.util.Collections.emptyList();
+        }
+        return rentalService.getRentalsByStudent(currentUser.getUserId());
+    }
+
+    public List<model.Rental> getAllRentals() {
+        return rentalService.getAllRentals();
     }
 
     public void start() {

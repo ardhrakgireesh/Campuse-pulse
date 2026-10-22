@@ -1,6 +1,7 @@
 package view;
 
 import controller.MainController;
+import model.Rental;
 import model.Request;
 import model.Resource;
 import model.ResourceRequest;
@@ -232,6 +233,7 @@ public class MainView {
         tabs.addTab("Resource Catalog", createStudentCatalogTab());
         tabs.addTab("My Borrowed Items & Handover", createStudentBorrowedTab());
         tabs.addTab("Assistance & Emergencies", createStudentAssistanceTab());
+        tabs.addTab("Resource Rentals", createStudentRentalsTab());
 
         root.add(tabs, BorderLayout.CENTER);
         mainPanel.add(root, "STUDENT_DASHBOARD");
@@ -358,6 +360,12 @@ public class MainView {
 
         actionPanel.add(borrowBtn);
         panel.add(actionPanel, BorderLayout.SOUTH);
+
+        panel.addHierarchyListener(e -> {
+            if ((e.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0 && panel.isShowing()) {
+                refreshCatalog.run();
+            }
+        });
 
         refreshCatalog.run();
         return panel;
@@ -685,6 +693,137 @@ public class MainView {
         return panel;
     }
 
+    private JPanel createStudentRentalsTab() {
+        JPanel panel = new JPanel(new BorderLayout(8, 8));
+        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+
+        // Top Panel: Rent New Resource
+        JPanel rentForm = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 6));
+        rentForm.setBorder(BorderFactory.createTitledBorder("Rent a Campus Resource"));
+
+        JLabel resLabel = new JLabel("Available Resource:");
+        JComboBox<String> resCombo = new JComboBox<>();
+
+        JLabel daysLabel = new JLabel("Duration:");
+        Integer[] daysOptions = new Integer[]{1, 2, 3, 5, 7, 10, 14};
+        JComboBox<Integer> daysCombo = new JComboBox<>(daysOptions);
+        daysCombo.setSelectedItem(7);
+
+        JButton rentBtn = new JButton("Confirm Rental");
+        rentBtn.setFont(new Font("SansSerif", Font.BOLD, 12));
+
+        rentForm.add(resLabel);
+        rentForm.add(resCombo);
+        rentForm.add(daysLabel);
+        rentForm.add(daysCombo);
+        rentForm.add(new JLabel("days (Max 14)"));
+        rentForm.add(rentBtn);
+
+        // Center Panel: Student's Rentals Table
+        String[] cols = {"Rental ID", "Resource ID", "Item Name", "Rented On", "Due Date", "Returned On", "Status", "Fine"};
+        DefaultTableModel model = new DefaultTableModel(cols, 0) {
+            @Override
+            public boolean isCellEditable(int r, int c) { return false; }
+        };
+        JTable table = new JTable(model);
+        styleTable(table);
+
+        Runnable refreshResources = () -> {
+            resCombo.removeAllItems();
+            if (controller == null) return;
+            for (Resource r : controller.getResourceCatalog()) {
+                if (AppConstants.RESOURCE_STATUS_AVAILABLE.equals(r.getStatus()) && r.getQuantity() > 0) {
+                    resCombo.addItem(r.getResourceId() + " - " + r.getResourceName() + " (Qty: " + r.getQuantity() + ")");
+                }
+            }
+        };
+
+        Runnable refreshRentals = () -> {
+            model.setRowCount(0);
+            if (controller == null) return;
+            List<model.Rental> rentals = controller.getRentalsForCurrentStudent();
+            for (model.Rental rnt : rentals) {
+                Resource res = controller.getResourceService().findById(rnt.getResourceId());
+                String resName = res != null ? res.getResourceName() : rnt.getResourceId();
+                String statusDisplay = rnt.getStatus();
+                double fine = controller.getRentalService().calculateFine(rnt);
+
+                if (Rental.STATUS_ACTIVE.equals(rnt.getStatus())) {
+                    if (controller.getRentalService().isOverdue(rnt)) {
+                        long overdueDays = controller.getRentalService().calculateOverdueDays(rnt);
+                        statusDisplay = "OVERDUE (" + overdueDays + "d late)";
+                    } else {
+                        statusDisplay = "ACTIVE";
+                    }
+                }
+
+                String fineDisplay = fine > 0 ? String.format("₹%.2f", fine) : "₹0.00";
+                String returnDateDisplay = rnt.getActualReturnDate() != null ? rnt.getActualReturnDate() : "-";
+
+                model.addRow(new Object[]{
+                        rnt.getRentalId(),
+                        rnt.getResourceId(),
+                        resName,
+                        rnt.getRentalDate(),
+                        rnt.getExpectedReturnDate(),
+                        returnDateDisplay,
+                        statusDisplay,
+                        fineDisplay
+                });
+            }
+        };
+
+        rentBtn.addActionListener(e -> {
+            String selected = (String) resCombo.getSelectedItem();
+            if (selected == null || selected.isEmpty()) {
+                showError("Please select an available resource to rent.");
+                return;
+            }
+            String resId = selected.split(" - ")[0].trim();
+            int duration = (int) daysCombo.getSelectedItem();
+
+            try {
+                model.Rental rental = controller.rentResource(resId, duration);
+                showMessage("Rental confirmed successfully!\n\n"
+                        + "Rental ID: " + rental.getRentalId() + "\n"
+                        + "Resource: " + resId + "\n"
+                        + "Rental Date: " + rental.getRentalDate() + "\n"
+                        + "Due Date: " + rental.getExpectedReturnDate() + "\n\n"
+                        + "Please return on or before the due date to avoid overdue fines of ₹2.00/day.");
+                refreshResources.run();
+                refreshRentals.run();
+            } catch (Exception ex) {
+                showError(ex.getMessage());
+            }
+        });
+
+        JPanel topBar = new JPanel(new BorderLayout());
+        topBar.add(rentForm, BorderLayout.CENTER);
+
+        JButton refreshListBtn = new JButton("Refresh List");
+        refreshListBtn.addActionListener(e -> {
+            refreshResources.run();
+            refreshRentals.run();
+        });
+        JPanel refreshWrapper = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        refreshWrapper.add(refreshListBtn);
+        topBar.add(refreshWrapper, BorderLayout.SOUTH);
+
+        panel.add(topBar, BorderLayout.NORTH);
+        panel.add(new JScrollPane(table), BorderLayout.CENTER);
+
+        panel.addHierarchyListener(e -> {
+            if ((e.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0 && panel.isShowing()) {
+                refreshResources.run();
+                refreshRentals.run();
+            }
+        });
+
+        refreshResources.run();
+        refreshRentals.run();
+        return panel;
+    }
+
     public void showVolunteerDashboard() {
         JPanel root = new JPanel(new BorderLayout());
 
@@ -909,6 +1048,7 @@ public class MainView {
         tabs.addTab("Resource Inventory", createStaffInventoryTab());
         tabs.addTab("Borrow Requests & Handovers", createStaffHandoversTab());
         tabs.addTab("Campus Activity", createStaffActivityTab());
+        tabs.addTab("Rental Management", createStaffRentalsTab());
 
         root.add(tabs, BorderLayout.CENTER);
         mainPanel.add(root, "STAFF_DASHBOARD");
@@ -981,6 +1121,12 @@ public class MainView {
         actions.add(addBtn);
         panel.add(new JScrollPane(table), BorderLayout.CENTER);
         panel.add(actions, BorderLayout.SOUTH);
+
+        panel.addHierarchyListener(e -> {
+            if ((e.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0 && panel.isShowing()) {
+                refreshInventory.run();
+            }
+        });
 
         refreshInventory.run();
         return panel;
@@ -1136,6 +1282,119 @@ public class MainView {
         return panel;
     }
 
+    private JPanel createStaffRentalsTab() {
+        JPanel panel = new JPanel(new BorderLayout(8, 8));
+        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+
+        JPanel topBar = new JPanel(new BorderLayout());
+        JLabel info = new JLabel("All active and completed resource rentals. Daily fine rate: ₹2.00 per overdue day.");
+        info.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        JButton refreshBtn = new JButton("Refresh Rentals");
+        topBar.add(info, BorderLayout.WEST);
+        topBar.add(refreshBtn, BorderLayout.EAST);
+        panel.add(topBar, BorderLayout.NORTH);
+
+        String[] cols = {"Rental ID", "Student ID", "Resource ID", "Item Name", "Rented On", "Due Date", "Returned On", "Status", "Fine"};
+        DefaultTableModel model = new DefaultTableModel(cols, 0) {
+            @Override
+            public boolean isCellEditable(int r, int c) { return false; }
+        };
+        JTable table = new JTable(model);
+        styleTable(table);
+
+        Runnable refreshRentals = () -> {
+            model.setRowCount(0);
+            if (controller == null) return;
+            List<model.Rental> rentals = controller.getAllRentals();
+            for (model.Rental rnt : rentals) {
+                Resource res = controller.getResourceService().findById(rnt.getResourceId());
+                String resName = res != null ? res.getResourceName() : rnt.getResourceId();
+                String statusDisplay = rnt.getStatus();
+                double fine = controller.getRentalService().calculateFine(rnt);
+
+                if (Rental.STATUS_ACTIVE.equals(rnt.getStatus())) {
+                    if (controller.getRentalService().isOverdue(rnt)) {
+                        long overdueDays = controller.getRentalService().calculateOverdueDays(rnt);
+                        statusDisplay = "OVERDUE (" + overdueDays + "d late)";
+                    } else {
+                        statusDisplay = "ACTIVE";
+                    }
+                }
+
+                String fineDisplay = fine > 0 ? String.format("₹%.2f", fine) : "₹0.00";
+                String returnDateDisplay = rnt.getActualReturnDate() != null ? rnt.getActualReturnDate() : "-";
+
+                model.addRow(new Object[]{
+                        rnt.getRentalId(),
+                        rnt.getStudentId(),
+                        rnt.getResourceId(),
+                        resName,
+                        rnt.getRentalDate(),
+                        rnt.getExpectedReturnDate(),
+                        returnDateDisplay,
+                        statusDisplay,
+                        fineDisplay
+                });
+            }
+        };
+
+        refreshBtn.addActionListener(e -> refreshRentals.run());
+
+        panel.addHierarchyListener(e -> {
+            if ((e.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0 && panel.isShowing()) {
+                refreshRentals.run();
+            }
+        });
+
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
+        JButton returnBtn = new JButton("Process Resource Return");
+        returnBtn.setFont(new Font("SansSerif", Font.BOLD, 12));
+
+        returnBtn.addActionListener(e -> {
+            int row = table.getSelectedRow();
+            if (row == -1) {
+                showMessage("Please select an active rental from the table to process its return.");
+                return;
+            }
+            String rentalId = (String) model.getValueAt(row, 0);
+            String status = (String) model.getValueAt(row, 7);
+            String fineStr = (String) model.getValueAt(row, 8);
+
+            if (status.startsWith("RETURNED")) {
+                showError("Rental " + rentalId + " is already returned.");
+                return;
+            }
+
+            int confirm = JOptionPane.showConfirmDialog(
+                    frame,
+                    "Process return for Rental: " + rentalId + "?\nCalculated Fine: " + fineStr + "\n\nThis will restore the resource to the catalog.",
+                    "Confirm Resource Return",
+                    JOptionPane.YES_NO_OPTION
+            );
+
+            if (confirm == JOptionPane.YES_OPTION) {
+                try {
+                    model.Rental returned = controller.processRentalReturn(rentalId);
+                    String message = "Resource returned successfully!\n\nRental ID: " + returned.getRentalId()
+                            + "\nActual Return Date: " + returned.getActualReturnDate()
+                            + "\nFinal Overdue Fine: ₹" + String.format("%.2f", returned.getFineAmount())
+                            + "\n\nInventory has been restored in the catalog.";
+                    showMessage(message);
+                    refreshRentals.run();
+                } catch (Exception ex) {
+                    showError(ex.getMessage());
+                }
+            }
+        });
+
+        actions.add(returnBtn);
+        panel.add(new JScrollPane(table), BorderLayout.CENTER);
+        panel.add(actions, BorderLayout.SOUTH);
+
+        refreshRentals.run();
+        return panel;
+    }
+
     public void showAdminPanel() {
         JPanel root = new JPanel(new BorderLayout());
         root.add(createHeader(AppConstants.TITLE_ADMIN_PANEL), BorderLayout.NORTH);
@@ -1183,7 +1442,7 @@ public class MainView {
                 if (selRole != null && !selRole.equals("ALL ROLES") && !selRole.equalsIgnoreCase(u.getRole())) {
                     continue;
                 }
-                boolean active = controller.login(u.getEmail(), u.getPassword());
+                boolean active = controller.isUserActive(u.getUserId());
                 model.addRow(new Object[]{
                         u.getUserId(),
                         u.getName(),
